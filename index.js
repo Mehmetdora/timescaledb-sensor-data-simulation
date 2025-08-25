@@ -1,4 +1,5 @@
 import { Client } from "pg";
+import * as func from "./functions.js"; // gerekli fonksiyonlar
 
 // PostgreSQL bağlantı ayarları
 const client = new Client({
@@ -9,47 +10,88 @@ const client = new Client({
   database: "timescale_playground", // kendi veritabanını yaz
 });
 
-async function main() {
-  try {
-    await client.connect();
-    console.log("✅ PostgreSQL bağlantısı başarılı!");
+// Tabloları kaldır
+async function drop_tables() {
+  var start_time = Date.now();
+  await func.drop_sensors_table(client);
+  console.log(
+    "Sensors tablo kaldırma süresi:",
+    (Date.now() - start_time) / 1000,
+    "sn"
+  );
 
-    // 1) Tablo oluşturma
-    /* await client.query(`
-      CREATE TABLE IF NOT EXISTS deneme (
-        time TIMESTAMPTZ NOT NULL,
-        sensor_id INT NOT NULL,
-        value DOUBLE PRECISION
-      );
-    `); */
+  start_time = Date.now();
+  await func.drop_sensor_data_table(client);
+  console.log(
+    "Sensor Data tablo kaldırma süresi:",
+    (Date.now() - start_time) / 1000,
+    "sn"
+  );
+}
+
+// Tabloları oluştur
+async function create_tables() {
+  var start_time = Date.now();
+  await func.create_sensors_table(client);
+  console.log(
+    "Sensors tablo oluşturma süresi:",
+    (Date.now() - start_time) / 1000,
+    "sn"
+  );
+
+  start_time = Date.now();
+  await func.create_sensor_data_table(client);
+  console.log(
+    "Sensor Data tablo oluşturma süresi:",
+    (Date.now() - start_time) / 1000,
+    "sn"
+  );
+}
+
+async function main() {
+  console.log("----> Proğram başladı.");
+
+  try {
+    await func.connect_db(client);
+
+    // Önceki tabloları kaldırma , hata olmasın diye
+    await drop_tables();
+
+    
+    // 1) Tabloların oluşturulması
+    await create_tables();
+
+    // 2) Verilerin oluşturulması
+    //  '14 days',  '7 days'
+    var start_time = Date.now();
+    await func.insert_sensors_table(client);
+    console.log(
+      "Sensors tablosuna veri ekleme süresi:",
+      (Date.now() - start_time) / 1000,
+      "sn"
+    );
+
+    start_time = Date.now();
+    await func.insert_sensor_data_table(client, `2 hours`, `1 hours`);
+    console.log(
+      "Sensor Data tablosuna veri ekleme süresi:",
+      (Date.now() - start_time) / 1000,
+      "sn"
+    );
 
     // Tablo kaldırma
-    await client.query(`DROP TABLE IF EXISTS deneme;`);
+    //drop_tables();
 
-    // 2) Hypertable oluşturma (Timescale)
-    /* await client.query(`
-      SELECT create_hypertable('sensor_data', 'time', if_not_exists => TRUE);
-    `); */
 
-    // 3) Örnek veri ekleme
-    /* await client.query(`
-      INSERT INTO sensor_data (time, sensor_id, value)
-      VALUES (NOW(), 1, 25.3);
-    `); */
-
-    // 4) Veri çekme
-    /* const res = await client.query("SELECT * FROM sensor_data LIMIT 5;");
-    console.log("📊 Sonuçlar:", res.rows);
-    */ 
-  
 
   } catch (err) {
     console.error("❌ Hata:", err);
   } finally {
     await client.end();
+    console.log("PostgreSQL bağlantısı kapatıldı.");
   }
 }
 
-main();
+await main();
 
-console.log("ffff");
+console.log("----> Proğram sonlandı.");
