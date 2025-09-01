@@ -1,11 +1,158 @@
 export const connect_db = async (client) => {
   try {
     await client.connect();
-    console.log("----> PostgreSQL bağlantısı başarılı!");
+    console.log("----> PostgreSQL bağlantısı başarılıı!");
   } catch (err) {
     console.log("\n@@@@@-> Hata:", err, "\n");
   }
 };
+
+export async function get_sensor_data_table_size(client) {
+  try {
+    const result = await client.query(`
+        
+        SELECT pg_size_pretty(pg_total_relation_size('sensor_data'));
+      
+      `);
+    return result.rows[0].pg_size_pretty;
+  } catch (err) {
+    console.log("\n@@@@@-> Hata:", err, "\n");
+  }
+}
+
+export async function get_database_size(client) {
+  try {
+    const result = await client.query(`
+        
+        SELECT pg_size_pretty(pg_database_size('timescale_playground'));
+      
+      `);
+    return result.rows[0].pg_size_pretty;
+  } catch (err) {
+    console.log("\n@@@@@-> Hata:", err, "\n");
+  }
+}
+
+export async function get_sensor_data_chunks_size(client) {
+  try {
+    const result = await client.query(`
+        
+        SELECT chunk_name, pg_size_pretty(pg_total_relation_size(chunk_name::regclass)) AS size
+        FROM show_chunks('sensor_data') AS chunk_name;      
+     
+      `);
+    console.table(result.rows);
+  } catch (err) {
+    console.log("\n@@@@@-> Hata:", err, "\n");
+  }
+}
+
+export async function table_to_hypertable(client) {
+  try {
+    // tablo oluşturulduktan sonra ilk veri eklenmeden sonra hypertable yap
+    // veriler 7 günlük chunklara ayrılacak
+
+    //migrate_data : eğer bir tablo önceden oluşturulmuş ve veri eklenmişse bu verilerin uygun chunklara taşınmasını sağlar. 
+
+    const result = await client.query(`
+        SELECT create_hypertable(
+            'sensor_data',
+            'reading_time',
+            migrate_data => true,
+            chunk_time_interval => INTERVAL '4 days'
+        );      
+      `);
+    console.log("----> tablo hypertable yapıldı!");
+    console.log("----> result:", result, "\n");
+  } catch (err) {
+    console.log("\n@@@@@-> Hata:", err, "\n");
+  }
+}
+
+export async function compression_settings(client) {
+  try {
+    //segmentby değeri verinin hangi kolonuna göre gruplanacağını belirler, veriler hangi kolon üzerinde dağılıyorsa bu kolon seçilmelidir.
+    // orderby ile verilerin sıkıştırma yapılırken hangi sıraya göre nasıl yapılacağını belirler.
+
+    // veriler sensörler üzerinde dağıldığı için sensor_id kolonu segmentby olarak seçilmiştir.
+    const result = await client.query(`
+        ALTER TABLE sensor_data SET (
+          timescaledb.compress = true,
+          timescaledb.compress_segmentby = 'sensor_id',
+          timescaledb.compress_orderby = 'reading_time DESC'
+        );
+      `);
+    console.log("----> compression ayarları yapıldı!");
+    console.log("----> result:", result, "\n");
+  } catch (err) {
+    console.log("\n@@@@@-> Hata:", err, "\n");
+  }
+}
+
+export async function get_chunk_names(client) {
+  try {
+    const result = await client.query(`
+      
+      SELECT chunk_schema || '.' || chunk_name AS chunk_full_name
+      FROM timescaledb_information.chunks
+      WHERE hypertable_name = 'sensor_data'
+      ORDER BY range_start;
+
+      
+      `);
+    console.log("----> chunk isimleri alındı!");
+    console.log("----> result:", result, "\n");
+
+    return result.rows;
+  } catch (err) {
+    console.log("\n@@@@@-> Hata:", err, "\n");
+  }
+}
+
+export async function compress_chunks(client, chunk_names) {
+  try {
+    // Her chunk için sıkıştırma işlemi yap
+    for (const chunk_name of chunk_names) {
+      console.log(`----> ${chunk_name} sıkıştırılıyor...`);
+      const result = await client.query(`
+        SELECT compress_chunk('${chunk_name}');
+      `);
+      console.log(`----> ${chunk_name} sıkıştırıldı!`);
+    }
+
+    console.log("----> Tüm chunklar sıkıştırıldı!");
+  } catch (err) {
+    console.log("\n@@@@@-> Hata:", err, "\n");
+  }
+}
+
+export async function get_uncompressed_chunk_names(client) {
+  try {
+    const result = await client.query(`
+      
+        SELECT chunk_schema || '.' || chunk_name AS chunk_full_name,
+              is_compressed
+        FROM timescaledb_information.chunks
+        WHERE hypertable_name = 'sensor_data';
+
+      `);
+
+    var uncompressed_chunks = [];
+    for (const chunk of result.rows) {
+      if (!chunk.is_compressed) {
+        uncompressed_chunks.push(chunk.chunk_full_name);
+      }
+    }
+    console.log("----> Sıkıştırılmamış chunk isimleri alındı!");
+    console.log("----> uncompressed_chunks:", uncompressed_chunks, "\n");
+    return uncompressed_chunks;
+  } catch (err) {
+    console.log("\n@@@@@-> Hata:", err, "\n");
+  }
+}
+
+
+
 
 
 
@@ -60,7 +207,8 @@ export async function insert_sensors_table(client) {
     console.error("@@@@-> sensors verisi eklenirken hata:", err);
   }
 }
-export const select_sensors_table = ``;
+
+
 
 
 
@@ -123,12 +271,45 @@ export async function insert_sensor_data_table(client, start_time, end_time) {
         ) AS t;
     `);
     await client.query("COMMIT");
-    console.log("----> sensor_data tablosuna örnek veriler eklendi!");
-    console.log("----> result:", result);
+    console.log("----> sensor_data tablosuna ilgili veriler eklendi!");
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("@@@@-> sensor_data verisi eklenirken hata:", err);
   }
 }
 
-export const select_sensor_data_table = ``;
+export async function select_sensor_data_table(client) {
+
+  try {
+    
+    /* 
+     WHERE
+            "reading_time" >= CURRENT_DATE - INTERVAL '3 days'
+    */
+
+
+    const result = await client.query(`
+      
+        SELECT
+            sensor_id,
+            AVG(temp) AS average_temperature,
+            MIN(temp) AS min_temperature,
+            MAX(temp) AS max_temperature
+        FROM sensor_data
+        GROUP BY sensor_id 
+        ORDER BY sensor_id; 
+      
+      `);
+    console.log("----> sensor_data tablosundan veriler alındı!");
+    console.table(result.rows);
+    return result.rows;
+
+
+
+  } catch (err) {
+    console.log("\n@@@@@-> Hata:", err, "\n");
+    
+  }
+
+
+}
